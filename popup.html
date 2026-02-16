@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <h3>TabNap Settings</h3>
+    <div class="row">
+      <label for="timeout">Snooze after (minutes):</label>
+      <input type="number" id="timeout" min="1" max="1440">
+    </div>
+    <div class="row">
+      <p class="small">Tabs playing audio or with unsaved text will not be snoozed.</p>
+    </div>
+    <div class="row">
+      <button id="save">Save Settings</button>
+    </div>
+    <div id="status"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
