@@ -12,6 +12,24 @@ if (originalTitle) {
 
 if (originalUrl) {
     document.getElementById('url').textContent = originalUrl;
+    
+    // Set favicon
+    const faviconImg = document.getElementById('favicon');
+    const domain = new URL(originalUrl).hostname;
+    const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
+    
+    faviconImg.onload = () => {
+        faviconImg.style.display = 'inline-block';
+        faviconImg.style.opacity = '1';
+    };
+    faviconImg.style.opacity = '0';
+    faviconImg.src = faviconUrl;
+
+    // Update tab favicon
+    const link = document.createElement('link');
+    link.rel = 'icon';
+    link.href = faviconUrl;
+    document.head.appendChild(link);
 }
 
 // Wake up on click

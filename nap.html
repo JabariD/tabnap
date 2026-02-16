@@ -23,9 +23,15 @@
             max-width: 80%;
         }
         .icon {
-            font-size: 64px;
-            margin-bottom: 20px;
-            display: block;
+            width: 96px;
+            height: 96px;
+            margin-bottom: 24px;
+            display: inline-block;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            background: rgba(255,255,255,0.05);
+            padding: 12px;
+            transition: opacity 0.3s ease;
         }
         h1 {
             font-size: 24px;
@@ -56,7 +62,7 @@
 </head>
 <body>
     <div class="container">
-        <span class="icon">💤</span>
+        <img id="favicon" class="icon" src="" style="display: none;">
         <h1 id="title">This tab is napping</h1>
         <p>It's frozen to save memory and CPU.</p>
         <div id="url" class="url"></div>
