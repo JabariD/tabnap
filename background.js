@@ -48,14 +48,17 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       active: false,    // Never snooze the current tab
       pinned: false,    // (Optional) ignore pinned tabs
       audible: false,   // Never snooze music/media
-      discarded: false  // Only check tabs that aren't already snoozed
     });
 
     const now = Date.now();
+    const extensionUrl = chrome.runtime.getURL('nap.html');
 
     for (const tab of tabs) {
+      // 0. Skip if already napping
+      if (tab.url.startsWith(extensionUrl) || tab.discarded) continue;
+
       // 1. Skip if on whitelist
-      if (whitelist.some(url => tab.url.includes(url))) continue;
+      if (whitelist.some(url => tab.url && tab.url.includes(url))) continue;
 
       const activity = tabActivity[tab.id];
       
@@ -76,19 +79,20 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       if (idleTime > timeoutMs) {
         console.log(`[TabNap] Snoozing tab ${tab.id}: ${tab.title}`);
         
-        // Visual indicator: Prepend a snooze emoji if not already there
-        if (!tab.title.startsWith('💤 ')) {
-          try {
-            await chrome.scripting.executeScript({
-              target: { tabId: tab.id },
-              func: () => { document.title = '💤 ' + document.title; }
-            });
-          } catch (e) {
-            // Some system pages don't allow script injection
-          }
+        const napUrl = `${extensionUrl}?url=${encodeURIComponent(tab.url)}&title=${encodeURIComponent(tab.title)}`;
+        
+        try {
+          // Redirect to the napping placeholder
+          await chrome.tabs.update(tab.id, { url: napUrl });
+          
+          // Small delay to allow the redirect to start before discarding
+          // This ensures the placeholder is what's in memory
+          setTimeout(() => {
+            chrome.tabs.discard(tab.id).catch(() => {});
+          }, 1000);
+        } catch (e) {
+          console.error(`[TabNap] Failed to snooze tab ${tab.id}:`, e);
         }
-
-        chrome.tabs.discard(tab.id);
       }
     }
   }

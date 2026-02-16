@@ -29,16 +29,30 @@ function sendHeartbeat() {
   const now = Date.now();
   if (now - lastHeartbeat < HEARTBEAT_THROTTLE) return;
 
+  // Check if extension context is still valid
+  if (!chrome.runtime?.id) {
+    // Context invalidated, remove listeners to stop further attempts
+    removeEventListeners();
+    return;
+  }
+
   isDirty = checkDirtyState();
   
   chrome.runtime.sendMessage({
     type: 'HEARTBEAT',
     isDirty: isDirty
   }).catch(() => {
-    // Port might be closed if extension updated/reloaded
+    // Context invalidated during send, clean up
+    removeEventListeners();
   });
   
   lastHeartbeat = now;
+}
+
+function removeEventListeners() {
+  ['mousemove', 'keydown', 'scroll', 'click'].forEach(eventType => {
+    window.removeEventListener(eventType, sendHeartbeat);
+  });
 }
 
 // Monitor events that signify activity

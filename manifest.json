@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TabNap",
-  "version": "1.0",
+  "version": "1.1",
   "description": "Snoozes inactive tabs after a user-defined timeout to save memory.",
   "permissions": [
     "tabs",
