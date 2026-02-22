@@ -13,28 +13,55 @@ chrome.runtime.onInstalled.addListener(() => {
   setupAlarm();
 });
 
+// Re-register alarm on browser startup (alarms don't survive browser restarts)
+chrome.runtime.onStartup.addListener(() => {
+  setupAlarm();
+});
+
 // Setup the periodic check alarm
 function setupAlarm() {
-  chrome.alarms.create('checkTabs', { periodInMinutes: CHECK_INTERVAL_MINS });
+  // Clear any existing alarm before creating to avoid duplicates
+  chrome.alarms.clear('checkTabs', () => {
+    chrome.alarms.create('checkTabs', { periodInMinutes: CHECK_INTERVAL_MINS });
+  });
 }
 
-// Map to track the last activity time for each tab
-// Key: tabId, Value: timestamp
-let tabActivity = {};
+// Tab activity is stored in chrome.storage.session so it survives service worker
+// restarts (which happen every ~30s of inactivity in MV3) but clears on browser close.
+// Key: tabId (string), Value: { timestamp, isDirty }
+
+async function getTabActivity() {
+  const { tabActivity = {} } = await chrome.storage.session.get('tabActivity');
+  return tabActivity;
+}
+
+async function setTabActivity(tabActivity) {
+  await chrome.storage.session.set({ tabActivity });
+}
 
 // Update activity when user interacts with a tab
 chrome.runtime.onMessage.addListener((message, sender) => {
   if (message.type === 'HEARTBEAT' && sender.tab) {
-    tabActivity[sender.tab.id] = {
-      timestamp: Date.now(),
-      isDirty: message.isDirty // If user has unsaved data
-    };
+    const tabId = String(sender.tab.id);
+    getTabActivity().then(tabActivity => {
+      tabActivity[tabId] = {
+        timestamp: Date.now(),
+        isDirty: message.isDirty // If user has unsaved data
+      };
+      setTabActivity(tabActivity);
+    });
   }
 });
 
 // Clean up activity map when tabs are closed
 chrome.tabs.onRemoved.addListener((tabId) => {
-  delete tabActivity[tabId];
+  const key = String(tabId);
+  getTabActivity().then(tabActivity => {
+    if (key in tabActivity) {
+      delete tabActivity[key];
+      setTabActivity(tabActivity);
+    }
+  });
 });
 
 // Alarm handler: checks all tabs
@@ -52,19 +79,24 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
     const now = Date.now();
     const extensionUrl = chrome.runtime.getURL('nap.html');
+    const tabActivity = await getTabActivity();
+    let dirty = false;
 
     for (const tab of tabs) {
+      const tabId = String(tab.id);
+
       // 0. Skip if already napping
       if (tab.url.startsWith(extensionUrl) || tab.discarded) continue;
 
       // 1. Skip if on whitelist
       if (whitelist.some(url => tab.url && tab.url.includes(url))) continue;
 
-      const activity = tabActivity[tab.id];
+      const activity = tabActivity[tabId];
       
       // If we have no activity data, assume it's just been opened and start tracking
       if (!activity) {
-        tabActivity[tab.id] = { timestamp: now, isDirty: false };
+        tabActivity[tabId] = { timestamp: now, isDirty: false };
+        dirty = true;
         continue;
       }
 
@@ -85,6 +117,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
           // Redirect to the napping placeholder
           await chrome.tabs.update(tab.id, { url: napUrl });
           
+          // Remove from tracking — the nap.html tab will be a fresh entry if reactivated
+          delete tabActivity[tabId];
+          dirty = true;
+
           // Small delay to allow the redirect to start before discarding
           // This ensures the placeholder is what's in memory
           setTimeout(() => {
@@ -94,6 +130,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
           console.error(`[TabNap] Failed to snooze tab ${tab.id}:`, e);
         }
       }
+    }
+
+    if (dirty) {
+      await setTabActivity(tabActivity);
     }
   }
 });
