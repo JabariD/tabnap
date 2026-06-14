@@ -78,15 +78,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     });
 
     const now = Date.now();
-    const extensionUrl = chrome.runtime.getURL('nap.html');
     const tabActivity = await getTabActivity();
     let dirty = false;
 
     for (const tab of tabs) {
       const tabId = String(tab.id);
 
-      // 0. Skip if already napping
-      if (tab.url.startsWith(extensionUrl) || tab.discarded) continue;
+      // 0. Skip if already discarded
+      if (tab.discarded) continue;
 
       // 1. Skip if on whitelist
       if (whitelist.some(url => tab.url && tab.url.includes(url))) continue;
@@ -111,21 +110,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       if (idleTime > timeoutMs) {
         console.log(`[TabNap] Snoozing tab ${tab.id}: ${tab.title}`);
         
-        const napUrl = `${extensionUrl}?url=${encodeURIComponent(tab.url)}&title=${encodeURIComponent(tab.title)}`;
-        
         try {
-          // Redirect to the napping placeholder
-          await chrome.tabs.update(tab.id, { url: napUrl });
-          
-          // Remove from tracking — the nap.html tab will be a fresh entry if reactivated
+          await chrome.tabs.discard(tab.id);
           delete tabActivity[tabId];
           dirty = true;
-
-          // Small delay to allow the redirect to start before discarding
-          // This ensures the placeholder is what's in memory
-          setTimeout(() => {
-            chrome.tabs.discard(tab.id).catch(() => {});
-          }, 1000);
         } catch (e) {
           console.error(`[TabNap] Failed to snooze tab ${tab.id}:`, e);
         }
