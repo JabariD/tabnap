@@ -5,20 +5,13 @@ const DEFAULT_TIMEOUT_MINS = 30;
 const CHECK_INTERVAL_MINS = 1;
 
 // Initialize on install
-chrome.runtime.onInstalled.addListener(async (details) => {
+chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
-    chrome.storage.local.set({ 
-      timeout: DEFAULT_TIMEOUT_MINS, 
-      whitelist: [] 
+    chrome.storage.local.set({
+      timeout: DEFAULT_TIMEOUT_MINS,
+      whitelist: []
     });
   }
-
-  if (details.reason === 'update') {
-    // Extension reloaded — any open nap.html tabs got invalidated by Chrome.
-    // Re-navigate them back to nap.html using the persistent registry.
-    await recoverSleepingTabs();
-  }
-
   setupAlarm();
 });
 
@@ -48,42 +41,49 @@ async function setTabActivity(tabActivity) {
   await chrome.storage.session.set({ tabActivity });
 }
 
-// Persistent registry of sleeping tabs — survives extension reloads and browser restarts.
-// Key: tabId (string), Value: { originalUrl, title, groupId }
-
-async function getSleepingTabs() {
-  const { sleepingTabs = {} } = await chrome.storage.local.get('sleepingTabs');
-  return sleepingTabs;
+// Persistent list of grouped tab URLs that TabNap put to sleep.
+//
+// Chrome's saved tab groups restore real URLs correctly, but on this machine
+// they eagerly load every tab in the reopened group. This list lets us put only
+// tabs that were previously sleeping back to sleep after Chrome's forced load.
+// Keying by URL is deliberately simple and restart-safe. We only use it for
+// grouped tabs to avoid surprising standalone tabs opened later with the same URL.
+async function getSleepingGroupUrls() {
+  const { sleepingGroupUrls = [] } = await chrome.storage.local.get('sleepingGroupUrls');
+  return sleepingGroupUrls;
 }
 
-async function setSleepingTabs(sleepingTabs) {
-  await chrome.storage.local.set({ sleepingTabs });
-}
-
-// On extension update, Chrome invalidates all open extension pages.
-// Find any tabs that were sleeping and got converted, re-navigate them back.
-async function recoverSleepingTabs() {
-  const sleepingTabs = await getSleepingTabs();
-  if (Object.keys(sleepingTabs).length === 0) return;
-
-  const extensionUrl = chrome.runtime.getURL('nap.html');
-  const updatedRegistry = { ...sleepingTabs };
-
-  for (const [tabId, data] of Object.entries(sleepingTabs)) {
-    try {
-      const tab = await chrome.tabs.get(parseInt(tabId));
-      if (!tab.url.startsWith(extensionUrl)) {
-        // Tab was converted — put it back to sleep
-        const napUrl = `${extensionUrl}?url=${encodeURIComponent(data.originalUrl)}&title=${encodeURIComponent(data.title)}`;
-        await chrome.tabs.update(tab.id, { url: napUrl });
-      }
-    } catch {
-      // Tab no longer exists, clean up the entry
-      delete updatedRegistry[tabId];
-    }
+async function addSleepingGroupUrl(url) {
+  if (!url) return;
+  const urls = await getSleepingGroupUrls();
+  if (!urls.includes(url)) {
+    urls.push(url);
+    await chrome.storage.local.set({ sleepingGroupUrls: urls });
   }
+}
 
-  await setSleepingTabs(updatedRegistry);
+async function removeSleepingGroupUrl(url) {
+  if (!url) return;
+  const urls = await getSleepingGroupUrls();
+  const nextUrls = urls.filter((storedUrl) => storedUrl !== url);
+  if (nextUrls.length !== urls.length) {
+    await chrome.storage.local.set({ sleepingGroupUrls: nextUrls });
+  }
+}
+
+async function markSleepingTitle(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        if (!document.title.startsWith('💤')) {
+          document.title = '💤 ' + document.title;
+        }
+      },
+    });
+  } catch (e) {
+    // Page doesn't allow injection — not fatal, snooze anyway.
+  }
 }
 
 // Update activity when user interacts with a tab
@@ -100,35 +100,39 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   }
 });
 
-// When a sleeping tab navigates away from nap.html, it's awake — remove from registry
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
-  if (!changeInfo.url) return;
-
-  const extensionUrl = chrome.runtime.getURL('nap.html');
+// Clean up activity map when tabs are closed
+chrome.tabs.onRemoved.addListener((tabId) => {
   const key = String(tabId);
-  const sleepingTabs = await getSleepingTabs();
+  getTabActivity().then(tabActivity => {
+    if (key in tabActivity) {
+      delete tabActivity[key];
+      setTabActivity(tabActivity);
+    }
+  });
+});
 
-  if (key in sleepingTabs && !changeInfo.url.startsWith(extensionUrl)) {
-    delete sleepingTabs[key];
-    await setSleepingTabs(sleepingTabs);
+// When the user activates a sleeping grouped tab, treat it as awake. This keeps
+// TabNap from immediately re-sleeping the tab the user intentionally opened.
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    await removeSleepingGroupUrl(tab.url);
+  } catch (e) {
+    // Tab disappeared or URL is inaccessible — ignore.
   }
 });
 
-// Clean up both maps when a tab is closed
-chrome.tabs.onRemoved.addListener(async (tabId) => {
-  const key = String(tabId);
+// Re-sleep grouped tabs after Chrome eagerly reloads a saved tab group.
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete') return;
+  if (tab.active || tab.discarded) return;
+  if (tab.groupId === -1) return;
 
-  const tabActivity = await getTabActivity();
-  if (key in tabActivity) {
-    delete tabActivity[key];
-    await setTabActivity(tabActivity);
-  }
+  const sleepingGroupUrls = await getSleepingGroupUrls();
+  if (!sleepingGroupUrls.includes(tab.url)) return;
 
-  const sleepingTabs = await getSleepingTabs();
-  if (key in sleepingTabs) {
-    delete sleepingTabs[key];
-    await setSleepingTabs(sleepingTabs);
-  }
+  await markSleepingTitle(tabId);
+  chrome.tabs.discard(tabId).catch(() => {});
 });
 
 // Alarm handler: checks all tabs
@@ -145,17 +149,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     });
 
     const now = Date.now();
-    const extensionUrl = chrome.runtime.getURL('nap.html');
     const tabActivity = await getTabActivity();
-    const sleepingTabs = await getSleepingTabs();
-    let activityDirty = false;
-    let sleepDirty = false;
+    let dirty = false;
 
     for (const tab of tabs) {
       const tabId = String(tab.id);
 
-      // 0. Skip if already napping or discarded
-      if (tab.url.startsWith(extensionUrl) || tab.discarded) continue;
+      // 0. Skip if already discarded (asleep)
+      if (tab.discarded) continue;
 
       // 1. Skip if on whitelist
       if (whitelist.some(url => tab.url && tab.url.includes(url))) continue;
@@ -165,7 +166,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       // If we have no activity data, assume it's just been opened and start tracking
       if (!activity) {
         tabActivity[tabId] = { timestamp: now, isDirty: false };
-        activityDirty = true;
+        dirty = true;
         continue;
       }
 
@@ -179,32 +180,35 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       const idleTime = now - activity.timestamp;
       if (idleTime > timeoutMs) {
         console.log(`[TabNap] Snoozing tab ${tab.id}: ${tab.title}`);
-        
-        const napUrl = `${extensionUrl}?url=${encodeURIComponent(tab.url)}&title=${encodeURIComponent(tab.title)}`;
 
+        // Visual marker: prepend 💤 to the tab's title before discarding. This
+        // touches only document.title, never the URL, so saved tab groups and
+        // session restore stay intact. The discarded tab keeps this title while
+        // asleep (and the saved group stores it), then reverts to the real title
+        // when clicked and reloaded. Best-effort — fails silently on pages where
+        // scripts can't run (chrome://, extension, Web Store), which just stay
+        // natively dimmed.
+        await markSleepingTitle(tab.id);
+
+        // Native discard: unloads the tab from memory but keeps its real URL,
+        // title, favicon, and group membership. This is what lets sleeping tabs
+        // survive a Chrome restart / saved tab group reopen — the group stores
+        // the real URL, not an extension page that Chrome refuses to restore.
         try {
-          // Register before navigating so the entry exists if anything goes wrong
-          sleepingTabs[tabId] = { originalUrl: tab.url, title: tab.title, groupId: tab.groupId };
-          sleepDirty = true;
-
-          await chrome.tabs.update(tab.id, { url: napUrl });
-
+          if (tab.groupId !== -1) {
+            await addSleepingGroupUrl(tab.url);
+          }
+          await chrome.tabs.discard(tab.id);
           delete tabActivity[tabId];
-          activityDirty = true;
-
-          // Small delay to allow the redirect to start before discarding
-          setTimeout(() => {
-            chrome.tabs.discard(tab.id).catch(() => {});
-          }, 1000);
+          dirty = true;
         } catch (e) {
-          // Undo the registry entry if the redirect failed
-          delete sleepingTabs[tabId];
           console.error(`[TabNap] Failed to snooze tab ${tab.id}:`, e);
         }
       }
     }
 
-    if (activityDirty) await setTabActivity(tabActivity);
-    if (sleepDirty) await setSleepingTabs(sleepingTabs);
+    if (dirty) {
+      await setTabActivity(tabActivity);
+    }
   }
 });

@@ -7,8 +7,10 @@ A minimal, transparent, and smart browser extension that snoozes inactive tabs t
 - **Smart Snoozing:** Only snoozes tabs after X minutes of inactivity.
 - **Data Protection:** Automatically detects unsaved text in forms/inputs and prevents snoozing.
 - **Media Aware:** Won't snooze tabs playing music or video.
-- **Visual Feedback:** Prepends a 💤 emoji to snoozed tab titles so you know exactly which tabs are napping.
-- **Native Efficiency:** Uses the Chrome `tabs.discard` API to reduce tab memory usage by ~95% while keeping them in your tab strip.
+- **Native Efficiency:** Uses the Chrome `tabs.discard` API to reduce tab memory usage by ~95% while keeping tabs in your tab strip.
+- **Visual Feedback:** Prepends a 💤 emoji to snoozed tab titles so you can spot sleeping tabs at a glance (reverts to the real title when you click in).
+- **Saved-Group Safe:** Snoozed tabs keep their real URL and group membership. If Chrome eagerly reloads a saved tab group, TabNap recognizes previously sleeping grouped URLs and puts those background tabs back to sleep.
+  - Caveat: grouped sleep tracking is URL-based. If two grouped tabs have the exact same URL, waking one removes that URL from the sleep list for both.
 
 ## Installation (Developer Mode)
 
